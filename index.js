@@ -16,7 +16,10 @@ const app = express();
 const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
 
 
-app.use(cors());
+app.use(cors({
+  origin: "https://client-95yu.onrender.com"
+}));
+
 app.use(express.json());
 
 // -------------------- HELPERS --------------------
