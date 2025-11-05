@@ -74,6 +74,16 @@ app.get("/api/users", async (req, res) => {
   res.json(users);
 });
 
+
+app.delete("/api/users/:id", async (req, res) => {
+  const id = parseInt(req.params.id);
+  let users = await readJSON(USER_DB_FILE);
+  users = users.filter(q => q.id !== id);
+  await writeJSON(USER_DB_FILE, users);
+  res.json({ message: "User o‘chirildi" });
+});
+
+
 // 3️⃣ Savollarni olish
 app.get("/api/questions", async (req, res) => {
   const questions = await readJSON(TEST_DB_FILE);
