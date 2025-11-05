@@ -2,6 +2,12 @@ import express from "express";
 import cors from "cors";
 import fs from "fs-extra";
 import TelegramBot from "node-telegram-bot-api";
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import dotenv from 'dotenv';
+dotenv.config();
+
+
 // -------------------- CONFIG --------------------
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN; // Render Environment variable
 const CHAT_ID = process.env.CHAT_ID;               // Render Environment variable
@@ -13,20 +19,88 @@ const RESULTS_FILE = "./results.json";
 
 // -------------------- SERVER INIT --------------------
 const app = express();
-const bot = new TelegramBot(TELEGRAM_TOKEN, { polling: false });
+const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
 
 
-app.use(
-  cors({
-    origin: [
+
+
+const corsOptions = {
+  origin: [
       "https://client-95yu.onrender.com",
       "http://localhost:5173",
-    ],
-  })
-);
+    ], // frontend manzilingiz
+  credentials: true,               // cookie yuborishga ruxsat
+};
 
-
+app.use(cors(corsOptions));
 app.use(express.json());
+
+
+
+// -------------------- CONFIG --------------------
+
+
+
+
+
+
+// -------------------- ADMINLAR RO‘YXATI --------------------
+const ADMINS = await Promise.all([
+  bcrypt.hash("123456",10).then(pw => ({ username:"admin1", password: pw, telegramId:5470369056 })),
+  bcrypt.hash("654321",10).then(pw => ({ username:"admin2", password: pw, telegramId:5616006343 })),
+]);
+
+
+// -------------------- TEMPORARY CODE STORAGE --------------------
+let pendingCodes = {}; // { username: { code, time } }
+
+// -------------------- LOGIN (1-BOSQICH) --------------------
+app.post("/api/admin/login", async (req, res) => {
+  const { username, password } = req.body;
+
+  const foundAdmin = ADMINS.find(a => a.username === username);
+  if (!foundAdmin) return res.status(401).json({ msg: "Login xato" });
+
+  const valid = await bcrypt.compare(password, foundAdmin.password);
+  if (!valid) return res.status(401).json({ msg: "Parol xato" });
+
+  // Tasodifiy kod yaratish
+  const code = Math.floor(100000 + Math.random() * 900000);
+  pendingCodes[username] = { code, time: Date.now() };
+
+  // Telegram orqali yuborish
+  await bot.sendMessage(
+    foundAdmin.telegramId,
+    `🔐 ${username} uchun kirish kodi: ${code}`
+  );
+
+  res.json({ step: "verify_code" });
+});
+
+// -------------------- KODNI TEKSHIRISH (2-BOSQICH) --------------------
+app.post("/api/admin/verify", (req, res) => {
+  const { username, code } = req.body;
+  const record = pendingCodes[username];
+  if (!record) return res.status(400).json({ msg: "Avval login qiling" });
+
+  const expired = Date.now() - record.time > 2 * 60 * 1000; // 2 daqiqa amal qiladi
+  if (expired) return res.status(400).json({ msg: "Kod muddati tugagan" });
+  if (String(record.code) !== String(code)) return res.status(401).json({ msg: "Kod xato" });
+
+  delete pendingCodes[username]; // kodni o‘chiramiz
+
+  const token = jwt.sign({ role: "admin", username }, "supersecret", { expiresIn: "2h" });
+  res.cookie("auth_token", token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "strict",
+  });
+
+  res.json({ msg: "Kirish muvaffaqiyatli!", token });
+});
+
+
+
 
 // -------------------- HELPERS --------------------
 const readJSON = async (file) => {
