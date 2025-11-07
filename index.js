@@ -5,6 +5,7 @@ import TelegramBot from "node-telegram-bot-api";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import dotenv from 'dotenv';
+import XLSX from "xlsx";
 dotenv.config();
 
 
@@ -227,6 +228,26 @@ app.post("/api/result", async (req, res) => {
 app.get("/api/results", async (req, res) => {
   const results = await readJSON(RESULTS_FILE);
   res.json(results);
+});
+
+
+// 📥 Excel fayl sifatida yuklab olish
+app.get("/api/results/download", async (req, res) => {
+  const results = await readJSON(RESULTS_FILE);
+
+  // JSON → Excel varaq
+  const worksheet = XLSX.utils.json_to_sheet(results);
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Natijalar");
+
+  // Faylni vaqtincha yaratish
+  const filePath = "./results.xlsx";
+  XLSX.writeFile(workbook, filePath);
+
+  // Faylni jo‘natish
+  res.download(filePath, "results.xlsx", (err) => {
+    if (!err) fs.unlinkSync(filePath); // Yuklangandan keyin o‘chirish
+  });
 });
 
 // -------------------- STATS ENDPOINTS --------------------
