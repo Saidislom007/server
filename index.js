@@ -4,15 +4,16 @@ import fs from "fs-extra";
 import TelegramBot from "node-telegram-bot-api";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 import XLSX from "xlsx";
+
 dotenv.config();
 
-
 // -------------------- CONFIG --------------------
-const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN; // Render Environment variable
-const CHAT_ID = process.env.CHAT_ID;               // Render Environment variable
+const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
+const CHAT_ID = process.env.CHAT_ID;
 const PORT = process.env.PORT || 4000;
+const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
 const TEST_DB_FILE = "./test_db.json";
 const USER_DB_FILE = "./user_db.json";
@@ -20,37 +21,29 @@ const RESULTS_FILE = "./results.json";
 
 // -------------------- SERVER INIT --------------------
 const app = express();
-const bot = new TelegramBot(process.env.TELEGRAM_TOKEN, { polling: true });
-
-
-
-
-const corsOptions = {
+app.use(cors({
   origin: [
-      "https://client-95yu.onrender.com",
-      "http://localhost:5173",
-    ], // frontend manzilingiz
-  credentials: true,               // cookie yuborishga ruxsat
-};
-
-app.use(cors(corsOptions));
+    "https://client-95yu.onrender.com",
+    "http://localhost:5173",
+  ],
+  credentials: true,
+}));
 app.use(express.json());
 
+// -------------------- TELEGRAM BOT (Webhook rejimi) --------------------
+const bot = new TelegramBot(TELEGRAM_TOKEN);
+bot.setWebHook(`${SERVER_URL}/bot${TELEGRAM_TOKEN}`);
 
-
-// -------------------- CONFIG --------------------
-
-
-
-
-
+app.post(`/bot${TELEGRAM_TOKEN}`, (req, res) => {
+  bot.processUpdate(req.body);
+  res.sendStatus(200);
+});
 
 // -------------------- ADMINLAR RO‘YXATI --------------------
 const ADMINS = await Promise.all([
-  bcrypt.hash("123456",10).then(pw => ({ username:"admin1", password: pw, telegramId:5470369056 })),
-  bcrypt.hash("654321",10).then(pw => ({ username:"admin2", password: pw, telegramId:5616006343 })),
+  bcrypt.hash("123456", 10).then(pw => ({ username: "admin1", password: pw, telegramId: 5470369056 })),
+  bcrypt.hash("654321", 10).then(pw => ({ username: "admin2", password: pw, telegramId: 5616006343 })),
 ]);
-
 
 // -------------------- TEMPORARY CODE STORAGE --------------------
 let pendingCodes = {}; // { username: { code, time } }
@@ -65,16 +58,10 @@ app.post("/api/admin/login", async (req, res) => {
   const valid = await bcrypt.compare(password, foundAdmin.password);
   if (!valid) return res.status(401).json({ msg: "Parol xato" });
 
-  // Tasodifiy kod yaratish
   const code = Math.floor(100000 + Math.random() * 900000);
   pendingCodes[username] = { code, time: Date.now() };
 
-  // Telegram orqali yuborish
-  await bot.sendMessage(
-    foundAdmin.telegramId,
-    `🔐 ${username} uchun kirish kodi: ${code}`
-  );
-
+  await bot.sendMessage(foundAdmin.telegramId, `🔐 ${username} uchun kirish kodi: ${code}`);
   res.json({ step: "verify_code" });
 });
 
@@ -84,24 +71,14 @@ app.post("/api/admin/verify", (req, res) => {
   const record = pendingCodes[username];
   if (!record) return res.status(400).json({ msg: "Avval login qiling" });
 
-  const expired = Date.now() - record.time > 2 * 60 * 1000; // 2 daqiqa amal qiladi
+  const expired = Date.now() - record.time > 2 * 60 * 1000;
   if (expired) return res.status(400).json({ msg: "Kod muddati tugagan" });
   if (String(record.code) !== String(code)) return res.status(401).json({ msg: "Kod xato" });
 
-  delete pendingCodes[username]; // kodni o‘chiramiz
-
+  delete pendingCodes[username];
   const token = jwt.sign({ role: "admin", username }, "supersecret", { expiresIn: "2h" });
-  res.cookie("auth_token", token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "strict",
-  });
-
   res.json({ msg: "Kirish muvaffaqiyatli!", token });
 });
-
-
-
 
 // -------------------- HELPERS --------------------
 const readJSON = async (file) => {
@@ -124,7 +101,7 @@ const sendResultToTelegram = (userName, score, total, statusText, phone_number, 
 
 // -------------------- ENDPOINTS --------------------
 
-// 1️⃣ Foydalanuvchini royxatdan o‘tkazish
+// 1️⃣ Foydalanuvchini ro‘yxatdan o‘tkazish
 app.post("/api/users", async (req, res) => {
   const { full_name, phone_number, id_card_number } = req.body;
   if (!full_name || !phone_number || !id_card_number) {
@@ -149,7 +126,6 @@ app.get("/api/users", async (req, res) => {
   res.json(users);
 });
 
-
 app.delete("/api/users/:id", async (req, res) => {
   const id = parseInt(req.params.id);
   let users = await readJSON(USER_DB_FILE);
@@ -157,7 +133,6 @@ app.delete("/api/users/:id", async (req, res) => {
   await writeJSON(USER_DB_FILE, users);
   res.json({ message: "User o‘chirildi" });
 });
-
 
 // 3️⃣ Savollarni olish
 app.get("/api/questions", async (req, res) => {
@@ -203,26 +178,21 @@ app.post("/api/result", async (req, res) => {
     id: Date.now(), 
     user_id: user.id, 
     full_name: user.full_name,
-    phone_number:user.phone_number,
-    id_card_number : user.id_card_number, 
+    phone_number: user.phone_number,
+    id_card_number: user.id_card_number, 
     score, 
     total, 
     date: new Date().toISOString(),
-    success: score >= 15  // ✅ 15 yoki undan ko‘p to‘g‘ri javob muvaffaqiyatli
+    success: score >= 15
   };
   results.push(newResult);
   await writeJSON(RESULTS_FILE, results);
 
-  // Telegramga yuborish
   const statusText = newResult.success ? "✅ Muvaffaqiyatli!" : "❌ Muvaffaqiyatsiz!";
-  sendResultToTelegram(user.full_name, score, total ,statusText,user.phone_number,user.id_card_number);
+  sendResultToTelegram(user.full_name, score, total, statusText, user.phone_number, user.id_card_number);
 
-  res.json({ 
-    message: "Natija saqlandi va Telegram guruhga yuborildi", 
-    success: newResult.success 
-  });
+  res.json({ message: "Natija saqlandi va Telegram guruhga yuborildi", success: newResult.success });
 });
-
 
 // 7️⃣ Barcha natijalar (admin)
 app.get("/api/results", async (req, res) => {
@@ -230,32 +200,22 @@ app.get("/api/results", async (req, res) => {
   res.json(results);
 });
 
-
 // 📥 Excel fayl sifatida yuklab olish
 app.get("/api/results/download", async (req, res) => {
   const results = await readJSON(RESULTS_FILE);
-
-  // JSON → Excel varaq
   const worksheet = XLSX.utils.json_to_sheet(results);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Natijalar");
-
-  // Faylni vaqtincha yaratish
   const filePath = "./results.xlsx";
   XLSX.writeFile(workbook, filePath);
-
-  // Faylni jo‘natish
   res.download(filePath, "results.xlsx", (err) => {
-    if (!err) fs.unlinkSync(filePath); // Yuklangandan keyin o‘chirish
+    if (!err) fs.unlinkSync(filePath);
   });
 });
 
-// -------------------- STATS ENDPOINTS --------------------
-
-// 8️⃣ User stats (kunlik foydalanuvchi soni)
+// -------------------- STATS --------------------
 app.get("/api/stats/users", async (req, res) => {
   const users = await readJSON(USER_DB_FILE);
-  // Group by date (YYYY-MM-DD)
   const stats = users.reduce((acc, u) => {
     const date = new Date(u.id).toISOString().split("T")[0];
     const found = acc.find(d => d.date === date);
@@ -266,26 +226,22 @@ app.get("/api/stats/users", async (req, res) => {
   res.json(stats);
 });
 
-// 9️⃣ Results stats (score distribution + correct/incorrect)
 app.get("/api/stats/results", async (req, res) => {
   const results = await readJSON(RESULTS_FILE);
-
   const scores = results.map(r => r.score);
-  const averageScore = scores.reduce((a,b) => a+b,0)/Math.max(scores.length,1);
+  const averageScore = scores.reduce((a, b) => a + b, 0) / Math.max(scores.length, 1);
   const minScore = Math.min(...scores);
   const maxScore = Math.max(...scores);
 
-  // Score distribution (0-2,3-5,6-8,9-10)
   const scoreDistribution = [
-    { scoreRange: "0-2", count: results.filter(r => r.score <=2).length },
-    { scoreRange: "3-5", count: results.filter(r => r.score >=3 && r.score <=5).length },
-    { scoreRange: "6-8", count: results.filter(r => r.score >=6 && r.score <=8).length },
-    { scoreRange: "9-10", count: results.filter(r => r.score >=9).length }
+    { scoreRange: "0-2", count: results.filter(r => r.score <= 2).length },
+    { scoreRange: "3-5", count: results.filter(r => r.score >= 3 && r.score <= 5).length },
+    { scoreRange: "6-8", count: results.filter(r => r.score >= 6 && r.score <= 8).length },
+    { scoreRange: "9-10", count: results.filter(r => r.score >= 9).length }
   ];
 
-  // Correct vs Incorrect (total - score)
-  const correct = scores.reduce((a,b) => a+b,0);
-  const incorrect = results.reduce((a,b) => a+(b.total-b.score),0);
+  const correct = scores.reduce((a, b) => a + b, 0);
+  const incorrect = results.reduce((a, b) => a + (b.total - b.score), 0);
   const correctIncorrect = [
     { name: "To‘g‘ri", value: correct },
     { name: "Noto‘g‘ri", value: incorrect }
@@ -296,5 +252,5 @@ app.get("/api/stats/results", async (req, res) => {
 
 // -------------------- SERVER START --------------------
 app.listen(PORT, () => {
-  console.log(`✅ Server ishga tushdi: http://localhost:${PORT}`);
+  console.log(`✅ Server ishga tushdi: ${SERVER_URL}`);
 });
