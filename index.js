@@ -1,11 +1,11 @@
 import express from "express";
 import cors from "cors";
-import fs from "fs-extra";
 import TelegramBot from "node-telegram-bot-api";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import XLSX from "xlsx";
+import { createClient } from "@supabase/supabase-js";
 
 dotenv.config();
 
@@ -15,22 +15,21 @@ const CHAT_ID = process.env.CHAT_ID;
 const PORT = process.env.PORT || 4000;
 const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
-const TEST_DB_FILE = "./test_db.json";
-const USER_DB_FILE = "./user_db.json";
-const RESULTS_FILE = "./results.json";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 // -------------------- SERVER INIT --------------------
 const app = express();
-app.use(cors({
-  origin: [
-    "https://client-95yu.onrender.com",
-    "http://localhost:5173",
-  ],
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: ["https://client-95yu.onrender.com", "http://localhost:5173"],
+    credentials: true,
+  })
+);
 app.use(express.json());
 
-// -------------------- TELEGRAM BOT (Webhook rejimi) --------------------
+// -------------------- TELEGRAM BOT --------------------
 const bot = new TelegramBot(TELEGRAM_TOKEN);
 bot.setWebHook(`${SERVER_URL}/bot${TELEGRAM_TOKEN}`);
 
@@ -41,18 +40,25 @@ app.post(`/bot${TELEGRAM_TOKEN}`, (req, res) => {
 
 // -------------------- ADMINLAR RO‘YXATI --------------------
 const ADMINS = await Promise.all([
-  bcrypt.hash("123456", 10).then(pw => ({ username: "admin1", password: pw, telegramId: 5470369056 })),
-  bcrypt.hash("654321", 10).then(pw => ({ username: "admin2", password: pw, telegramId: 5616006343 })),
+  bcrypt.hash("123456", 10).then((pw) => ({
+    username: "admin1",
+    password: pw,
+    telegramId: 5470369056,
+  })),
+  bcrypt.hash("654321", 10).then((pw) => ({
+    username: "admin2",
+    password: pw,
+    telegramId: 5616006343,
+  })),
 ]);
 
-// -------------------- TEMPORARY CODE STORAGE --------------------
-let pendingCodes = {}; // { username: { code, time } }
+let pendingCodes = {};
 
 // -------------------- LOGIN (1-BOSQICH) --------------------
 app.post("/api/admin/login", async (req, res) => {
   const { username, password } = req.body;
 
-  const foundAdmin = ADMINS.find(a => a.username === username);
+  const foundAdmin = ADMINS.find((a) => a.username === username);
   if (!foundAdmin) return res.status(401).json({ msg: "Login xato" });
 
   const valid = await bcrypt.compare(password, foundAdmin.password);
@@ -80,174 +86,109 @@ app.post("/api/admin/verify", (req, res) => {
   res.json({ msg: "Kirish muvaffaqiyatli!", token });
 });
 
-// -------------------- HELPERS --------------------
-const readJSON = async (file) => {
-  try {
-    const data = await fs.readFile(file, "utf-8");
-    return JSON.parse(data);
-  } catch {
-    return [];
-  }
-};
-
-const writeJSON = async (file, data) => {
-  await fs.writeFile(file, JSON.stringify(data, null, 2));
-};
-
+// -------------------- TELEGRAMGA NATIJA YUBORISH --------------------
 const sendResultToTelegram = (userName, score, total, statusText, phone_number, id_card_number) => {
   const message = `✅ Test natijasi \n${statusText}\nFoydalanuvchi: ${userName}\nTel raqam: ${phone_number}\nShaxsiy Raqam: ${id_card_number}\nTo‘g‘ri javoblar: ${score}/${total}`;
   bot.sendMessage(CHAT_ID, message);
 };
 
-// -------------------- ENDPOINTS --------------------
-
-// 1️⃣ Foydalanuvchini ro‘yxatdan o‘tkazish
+// -------------------- FOYDALANUVCHILAR --------------------
 app.post("/api/users", async (req, res) => {
   const { full_name, phone_number, id_card_number } = req.body;
-  if (!full_name || !phone_number || !id_card_number) {
-    return res.status(400).json({ message: "Foydalanuvchi ma’lumotlari yetarli emas!" });
-  }
+  if (!full_name || !phone_number || !id_card_number)
+    return res.status(400).json({ message: "Ma’lumotlar yetarli emas" });
 
-  const users = await readJSON(USER_DB_FILE);
-  const existingUser = users.find(u => u.id_card_number === id_card_number);
-  if (existingUser) {
-    return res.status(400).json({ message: "Foydalanuvchi allaqachon mavjud!" });
-  }
+  const { data: existing } = await supabase.from("users").select("*").eq("id_card_number", id_card_number);
+  if (existing.length > 0) return res.status(400).json({ message: "Foydalanuvchi mavjud" });
 
-  const newUser = { id: Date.now(), full_name, phone_number, id_card_number };
-  users.push(newUser);
-  await writeJSON(USER_DB_FILE, users);
-  res.status(201).json(newUser);
+  const { data, error } = await supabase.from("users").insert([{ full_name, phone_number, id_card_number }]);
+  if (error) return res.status(400).json({ message: error.message });
+  res.status(201).json(data[0]);
 });
 
-// 2️⃣ Foydalanuvchilar ro‘yxati (admin)
 app.get("/api/users", async (req, res) => {
-  const users = await readJSON(USER_DB_FILE);
-  res.json(users);
+  const { data, error } = await supabase.from("users").select("*");
+  if (error) return res.status(400).json({ message: error.message });
+  res.json(data);
 });
 
 app.delete("/api/users/:id", async (req, res) => {
-  const id = parseInt(req.params.id);
-  let users = await readJSON(USER_DB_FILE);
-  users = users.filter(q => q.id !== id);
-  await writeJSON(USER_DB_FILE, users);
+  const id = req.params.id;
+  const { error } = await supabase.from("users").delete().eq("id", id);
+  if (error) return res.status(400).json({ message: error.message });
   res.json({ message: "User o‘chirildi" });
 });
 
-// 3️⃣ Savollarni olish
+// -------------------- SAVOLLAR --------------------
 app.get("/api/questions", async (req, res) => {
-  const questions = await readJSON(TEST_DB_FILE);
-  res.json(questions);
+  const { data, error } = await supabase.from("questions").select("*");
+  if (error) return res.status(400).json({ message: error.message });
+  res.json(data);
 });
 
-// 4️⃣ Savol qo‘shish
 app.post("/api/questions", async (req, res) => {
   const { question, options, answer } = req.body;
-  if (!question || !options || !answer) {
-    return res.status(400).json({ message: "Savol, variantlar va javob kerak" });
-  }
-  const questions = await readJSON(TEST_DB_FILE);
-  const newQuestion = { id: Date.now(), question, options, answer };
-  questions.push(newQuestion);
-  await writeJSON(TEST_DB_FILE, questions);
-  res.status(201).json(newQuestion);
+  if (!question || !options || !answer)
+    return res.status(400).json({ message: "Ma’lumotlar yetarli emas" });
+
+  const { data, error } = await supabase.from("questions").insert([{ question, options, answer }]);
+  if (error) return res.status(400).json({ message: error.message });
+  res.status(201).json(data[0]);
 });
 
-// 5️⃣ Savolni o‘chirish
 app.delete("/api/questions/:id", async (req, res) => {
-  const id = parseInt(req.params.id);
-  let questions = await readJSON(TEST_DB_FILE);
-  questions = questions.filter(q => q.id !== id);
-  await writeJSON(TEST_DB_FILE, questions);
+  const id = req.params.id;
+  const { error } = await supabase.from("questions").delete().eq("id", id);
+  if (error) return res.status(400).json({ message: error.message });
   res.json({ message: "Savol o‘chirildi" });
 });
 
-// 6️⃣ Test natijasini yuborish
+// -------------------- TEST NATIJALARI --------------------
 app.post("/api/result", async (req, res) => {
   const { id_card_number, score, total } = req.body;
-  if (!id_card_number || score == null || total == null) {
+  if (!id_card_number || score == null || total == null)
     return res.status(400).json({ message: "Ma’lumot yetarli emas" });
-  }
 
-  const users = await readJSON(USER_DB_FILE);
-  const user = users.find(u => u.id_card_number === id_card_number);
-  if (!user) return res.status(400).json({ message: "Foydalanuvchi topilmadi. Iltimos royxatdan o‘ting!" });
+  const { data: user } = await supabase.from("users").select("*").eq("id_card_number", id_card_number).single();
+  if (!user) return res.status(400).json({ message: "Foydalanuvchi topilmadi" });
 
-  const results = await readJSON(RESULTS_FILE);
-  const newResult = { 
-    id: Date.now(), 
-    user_id: user.id, 
+  const success = score >= 15;
+  const newResult = {
+    user_id: user.id,
     full_name: user.full_name,
     phone_number: user.phone_number,
-    id_card_number: user.id_card_number, 
-    score, 
-    total, 
+    id_card_number: user.id_card_number,
+    score,
+    total,
     date: new Date().toISOString(),
-    success: score >= 15
+    success,
   };
-  results.push(newResult);
-  await writeJSON(RESULTS_FILE, results);
 
-  const statusText = newResult.success ? "✅ Muvaffaqiyatli!" : "❌ Muvaffaqiyatsiz!";
+  const { error } = await supabase.from("results").insert([newResult]);
+  if (error) return res.status(400).json({ message: error.message });
+
+  const statusText = success ? "✅ Muvaffaqiyatli!" : "❌ Muvaffaqiyatsiz!";
   sendResultToTelegram(user.full_name, score, total, statusText, user.phone_number, user.id_card_number);
 
-  res.json({ message: "Natija saqlandi va Telegram guruhga yuborildi", success: newResult.success });
+  res.json({ message: "Natija saqlandi va Telegramga yuborildi", success });
 });
 
-// 7️⃣ Barcha natijalar (admin)
 app.get("/api/results", async (req, res) => {
-  const results = await readJSON(RESULTS_FILE);
-  res.json(results);
+  const { data, error } = await supabase.from("results").select("*");
+  if (error) return res.status(400).json({ message: error.message });
+  res.json(data);
 });
 
-// 📥 Excel fayl sifatida yuklab olish
 app.get("/api/results/download", async (req, res) => {
-  const results = await readJSON(RESULTS_FILE);
-  const worksheet = XLSX.utils.json_to_sheet(results);
+  const { data, error } = await supabase.from("results").select("*");
+  if (error) return res.status(400).json({ message: error.message });
+
+  const worksheet = XLSX.utils.json_to_sheet(data);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Natijalar");
   const filePath = "./results.xlsx";
   XLSX.writeFile(workbook, filePath);
-  res.download(filePath, "results.xlsx", (err) => {
-    if (!err) fs.unlinkSync(filePath);
-  });
-});
-
-// -------------------- STATS --------------------
-app.get("/api/stats/users", async (req, res) => {
-  const users = await readJSON(USER_DB_FILE);
-  const stats = users.reduce((acc, u) => {
-    const date = new Date(u.id).toISOString().split("T")[0];
-    const found = acc.find(d => d.date === date);
-    if (found) found.count += 1;
-    else acc.push({ date, count: 1 });
-    return acc;
-  }, []);
-  res.json(stats);
-});
-
-app.get("/api/stats/results", async (req, res) => {
-  const results = await readJSON(RESULTS_FILE);
-  const scores = results.map(r => r.score);
-  const averageScore = scores.reduce((a, b) => a + b, 0) / Math.max(scores.length, 1);
-  const minScore = Math.min(...scores);
-  const maxScore = Math.max(...scores);
-
-  const scoreDistribution = [
-    { scoreRange: "0-2", count: results.filter(r => r.score <= 2).length },
-    { scoreRange: "3-5", count: results.filter(r => r.score >= 3 && r.score <= 5).length },
-    { scoreRange: "6-8", count: results.filter(r => r.score >= 6 && r.score <= 8).length },
-    { scoreRange: "9-10", count: results.filter(r => r.score >= 9).length }
-  ];
-
-  const correct = scores.reduce((a, b) => a + b, 0);
-  const incorrect = results.reduce((a, b) => a + (b.total - b.score), 0);
-  const correctIncorrect = [
-    { name: "To‘g‘ri", value: correct },
-    { name: "Noto‘g‘ri", value: incorrect }
-  ];
-
-  res.json({ averageScore, minScore, maxScore, scoreDistribution, correctIncorrect });
+  res.download(filePath, "results.xlsx");
 });
 
 // -------------------- SERVER START --------------------
