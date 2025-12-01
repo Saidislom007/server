@@ -5,7 +5,8 @@ import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import XLSX from "xlsx";
-import { createClient } from "@supabase/supabase-js";
+import path from "path";
+import { google } from "googleapis";
 
 dotenv.config();
 
@@ -13,14 +14,21 @@ dotenv.config();
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const PORT = process.env.PORT || 4000;
-const SERVER_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+const SERVER_URL =
+  process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+const SHEET_ID = process.env.SHEET_ID;
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+// -------------------- GOOGLE SHEETS AUTH --------------------
+const KEYFILE = path.resolve("./service-account.json");
+const auth = new google.auth.GoogleAuth({
+  keyFile: KEYFILE,
+  scopes: ["https://www.googleapis.com/auth/spreadsheets"],
+});
+const sheets = google.sheets({ version: "v4", auth });
 
 // -------------------- SERVER INIT --------------------
 const app = express();
+
 app.use(
   cors({
     origin: ["https://client-95yu.onrender.com", "http://localhost:5173"],
@@ -38,7 +46,7 @@ app.post(`/bot${TELEGRAM_TOKEN}`, (req, res) => {
   res.sendStatus(200);
 });
 
-// -------------------- ADMINLAR RO‘YXATI --------------------
+// -------------------- ADMINS --------------------
 const ADMINS = await Promise.all([
   bcrypt.hash("123456", 10).then((pw) => ({
     username: "admin1",
@@ -54,12 +62,11 @@ const ADMINS = await Promise.all([
 
 let pendingCodes = {};
 
-// -------------------- LOGIN (1-BOSQICH) --------------------
+// -------------------- LOGIN --------------------
 app.post("/api/admin/login", async (req, res) => {
   const { username, password } = req.body;
-
   const foundAdmin = ADMINS.find((a) => a.username === username);
-  if (!foundAdmin) return res.status(401).json({ msg: "Login xato" });
+  if (!foundAdmin) return res.status(401).json({ msg: "Login maʼlumotlari xato" });
 
   const valid = await bcrypt.compare(password, foundAdmin.password);
   if (!valid) return res.status(401).json({ msg: "Parol xato" });
@@ -67,131 +74,143 @@ app.post("/api/admin/login", async (req, res) => {
   const code = Math.floor(100000 + Math.random() * 900000);
   pendingCodes[username] = { code, time: Date.now() };
 
-  await bot.sendMessage(foundAdmin.telegramId, `🔐 ${username} uchun kirish kodi: ${code}`);
+  await bot.sendMessage(foundAdmin.telegramId, `🔐 Admin login tasdiqlash kodi: ${code}`);
   res.json({ step: "verify_code" });
 });
 
-// -------------------- KODNI TEKSHIRISH (2-BOSQICH) --------------------
 app.post("/api/admin/verify", (req, res) => {
   const { username, code } = req.body;
   const record = pendingCodes[username];
   if (!record) return res.status(400).json({ msg: "Avval login qiling" });
 
-  const expired = Date.now() - record.time > 2 * 60 * 1000;
-  if (expired) return res.status(400).json({ msg: "Kod muddati tugagan" });
+  if (Date.now() - record.time > 2 * 60 * 1000) return res.status(400).json({ msg: "Kod muddati tugagan" });
   if (String(record.code) !== String(code)) return res.status(401).json({ msg: "Kod xato" });
 
   delete pendingCodes[username];
-  const token = jwt.sign({ role: "admin", username }, "supersecret", { expiresIn: "2h" });
+  const token = jwt.sign({ role: "admin", username }, "secretkey123", { expiresIn: "2h" });
   res.json({ msg: "Kirish muvaffaqiyatli!", token });
 });
 
-// -------------------- TELEGRAMGA NATIJA YUBORISH --------------------
-const sendResultToTelegram = (userName, score, total, statusText, phone_number, id_card_number) => {
-  const message = `✅ Test natijasi \n${statusText}\nFoydalanuvchi: ${userName}\nTel raqam: ${phone_number}\nShaxsiy Raqam: ${id_card_number}\nTo‘g‘ri javoblar: ${score}/${total}`;
-  bot.sendMessage(CHAT_ID, message);
+// -------------------- TELEGRAM NATIJA --------------------
+const sendResultToTelegram = (userName, score, total, statusText, phone, id_card) => {
+  const msg = `📊 TEST NATIJASI\n${statusText}\n👤 Ism: ${userName}\n📞 Tel: ${phone}\n🆔 ID: ${id_card}\n🎯 Ball: ${score}/${total}`;
+  bot.sendMessage(CHAT_ID, msg);
 };
 
-// -------------------- FOYDALANUVCHILAR --------------------
+// -------------------- USERS --------------------
 app.post("/api/users", async (req, res) => {
-  const { full_name, phone_number, id_card_number } = req.body;
-  if (!full_name || !phone_number || !id_card_number)
-    return res.status(400).json({ message: "Ma’lumotlar yetarli emas" });
+  const { full_name, phone_number, id_card_number, birth_date, adress } = req.body;
+  const created_at = new Date().toISOString();
 
-  const { data: existing } = await supabase.from("users").select("*").eq("id_card_number", id_card_number);
-  if (existing.length > 0) return res.status(400).json({ message: "Foydalanuvchi mavjud" });
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Users!A:F",
+    valueInputOption: "USER_ENTERED",
+    resource: { values: [[full_name, phone_number, id_card_number, birth_date, adress, created_at]] },
+  });
 
-  const { data, error } = await supabase.from("users").insert([{ full_name, phone_number, id_card_number }]);
-  if (error) return res.status(400).json({ message: error.message });
-  res.status(201).json(data[0]);
+  res.json({ message: "User qo‘shildi" });
 });
 
 app.get("/api/users", async (req, res) => {
-  const { data, error } = await supabase.from("users").select("*");
-  if (error) return res.status(400).json({ message: error.message });
-  res.json(data);
+  const result = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Users!A:F" });
+  const rows = result.data.values || [];
+  const users = rows.slice(1).map((r) => ({
+    full_name: r[0],
+    phone_number: r[1],
+    id_card_number: r[2],
+    birth_date: r[3],
+    adress: r[4],
+    created_at: r[5],
+  }));
+  res.json(users);
 });
 
-app.delete("/api/users/:id", async (req, res) => {
-  const id = req.params.id;
-  const { error } = await supabase.from("users").delete().eq("id", id);
-  if (error) return res.status(400).json({ message: error.message });
-  res.json({ message: "User o‘chirildi" });
-});
-
-// -------------------- SAVOLLAR --------------------
+// -------------------- QUESTIONS --------------------
 app.get("/api/questions", async (req, res) => {
-  const { data, error } = await supabase.from("questions").select("*");
-  if (error) return res.status(400).json({ message: error.message });
-  res.json(data);
+  const result = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Questions!A:C" });
+  const rows = result.data.values || [];
+  const questions = rows.slice(1).map((r) => ({ question: r[0], options: JSON.parse(r[1]), answer: r[2] }));
+  res.json(questions);
 });
 
 app.post("/api/questions", async (req, res) => {
   const { question, options, answer } = req.body;
-  if (!question || !options || !answer)
-    return res.status(400).json({ message: "Ma’lumotlar yetarli emas" });
-
-  const { data, error } = await supabase.from("questions").insert([{ question, options, answer }]);
-  if (error) return res.status(400).json({ message: error.message });
-  res.status(201).json(data[0]);
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Questions!A:C",
+    valueInputOption: "USER_ENTERED",
+    resource: { values: [[question, JSON.stringify(options), answer]] },
+  });
+  res.json({ message: "Savol qo‘shildi" });
 });
 
-app.delete("/api/questions/:id", async (req, res) => {
-  const id = req.params.id;
-  const { error } = await supabase.from("questions").delete().eq("id", id);
-  if (error) return res.status(400).json({ message: error.message });
-  res.json({ message: "Savol o‘chirildi" });
-});
-
-// -------------------- TEST NATIJALARI --------------------
+// -------------------- RESULTS --------------------
 app.post("/api/result", async (req, res) => {
   const { id_card_number, score, total } = req.body;
-  if (!id_card_number || score == null || total == null)
-    return res.status(400).json({ message: "Ma’lumot yetarli emas" });
 
-  const { data: user } = await supabase.from("users").select("*").eq("id_card_number", id_card_number).single();
+  // Userni topish
+  const usersData = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Users!A:F" });
+  const rows = usersData.data.values || [];
+  const user = rows.find((r) => r[2] === id_card_number);
   if (!user) return res.status(400).json({ message: "Foydalanuvchi topilmadi" });
 
+  const [full_name, phone_number, , birth_date, adress] = user;
   const success = score >= 15;
-  const newResult = {
-    user_id: user.id,
-    full_name: user.full_name,
-    phone_number: user.phone_number,
-    id_card_number: user.id_card_number,
-    score,
-    total,
-    date: new Date().toISOString(),
-    success,
-  };
-
-  const { error } = await supabase.from("results").insert([newResult]);
-  if (error) return res.status(400).json({ message: error.message });
-
   const statusText = success ? "✅ Muvaffaqiyatli!" : "❌ Muvaffaqiyatsiz!";
-  sendResultToTelegram(user.full_name, score, total, statusText, user.phone_number, user.id_card_number);
 
-  res.json({ message: "Natija saqlandi va Telegramga yuborildi", success });
+  await sheets.spreadsheets.values.append({
+    spreadsheetId: SHEET_ID,
+    range: "Results!A:J",
+    valueInputOption: "USER_ENTERED",
+    resource: { values: [[full_name, id_card_number, phone_number, birth_date, adress, score, total, success ? "yes" : "no", new Date().toISOString(), "sent"]] },
+  });
+
+  sendResultToTelegram(full_name, score, total, statusText, phone_number, id_card_number);
+  res.json({ message: "Natija saqlandi", success });
 });
 
 app.get("/api/results", async (req, res) => {
-  const { data, error } = await supabase.from("results").select("*");
-  if (error) return res.status(400).json({ message: error.message });
-  res.json(data);
+  const result = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Results!A:J" });
+  const rows = result.data.values || [];
+  const list = rows.slice(1).map((r) => ({
+    full_name: r[0],
+    id_card_number: r[1],
+    phone_number: r[2],
+    birth_date: r[3],
+    adress: r[4],
+    score: r[5],
+    total: r[6],
+    success: r[7],
+    date: r[8],
+  }));
+  res.json(list);
 });
 
+// -------------------- DOWNLOAD RESULTS --------------------
 app.get("/api/results/download", async (req, res) => {
-  const { data, error } = await supabase.from("results").select("*");
-  if (error) return res.status(400).json({ message: error.message });
+  const result = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Results!A:J" });
+  const rows = result.data.values || [];
+  const json = rows.slice(1).map((r) => ({
+    full_name: r[0],
+    id_card_number: r[1],
+    phone_number: r[2],
+    birth_date: r[3],
+    adress: r[4],
+    score: r[5],
+    total: r[6],
+    success: r[7],
+    date: r[8],
+  }));
 
-  const worksheet = XLSX.utils.json_to_sheet(data);
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, "Natijalar");
+  const ws = XLSX.utils.json_to_sheet(json);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Results");
   const filePath = "./results.xlsx";
-  XLSX.writeFile(workbook, filePath);
+  XLSX.writeFile(wb, filePath);
+
   res.download(filePath, "results.xlsx");
 });
 
-// -------------------- SERVER START --------------------
-app.listen(PORT, () => {
-  console.log(`✅ Server ishga tushdi: ${SERVER_URL}`);
-});
+// -------------------- START SERVER --------------------
+app.listen(PORT, () => console.log(`🚀 Server ishga tushdi → ${SERVER_URL}`));
