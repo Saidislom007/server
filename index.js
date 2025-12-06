@@ -39,7 +39,14 @@ app.use(
 app.use(express.json());
 
 // -------------------- TELEGRAM BOT --------------------
-const bot = new TelegramBot(TELEGRAM_TOKEN);
+// -------------------- TELEGRAM BOT --------------------
+const bot = new TelegramBot(TELEGRAM_TOKEN, {
+  webHook: {
+    port: PORT,
+  },
+});
+
+// Render bo‘lsa HTTPS link bo‘lishi shart
 bot.setWebHook(`${SERVER_URL}/bot${TELEGRAM_TOKEN}`);
 
 app.post(`/bot${TELEGRAM_TOKEN}`, (req, res) => {
@@ -146,10 +153,17 @@ app.post("/api/questions", async (req, res) => {
   res.json({ message: "Savol qo‘shildi" });
 });
 
+app.get("/api/exam/questions", async (req, res) => {
+  const result = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Questions(Exam)!A:C" });
+  const rows = result.data.values || [];
+  const questions = rows.slice(1).map((r) => ({ question: r[0], options: JSON.parse(r[1]), answer: r[2] }));
+  res.json(questions);
+});
+
+
 // -------------------- RESULTS --------------------
 app.post("/api/result", async (req, res) => {
   const { id_card_number, score, total } = req.body;
-
   // Userni topish
   const usersData = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "Users!A:F" });
   const rows = usersData.data.values || [];
