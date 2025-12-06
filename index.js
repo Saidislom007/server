@@ -40,19 +40,18 @@ app.use(express.json());
 
 // -------------------- TELEGRAM BOT --------------------
 // -------------------- TELEGRAM BOT --------------------
-const bot = new TelegramBot(TELEGRAM_TOKEN, {
-  webHook: {
-    port: PORT,
-  },
-});
+// -------------------- TELEGRAM BOT --------------------
+const bot = new TelegramBot(TELEGRAM_TOKEN, { webHook: true });
 
-// Render bo‘lsa HTTPS link bo‘lishi shart
+// Webhook URL o‘rnash
 bot.setWebHook(`${SERVER_URL}/bot${TELEGRAM_TOKEN}`);
 
+// Express route — faqat shu listen qiladi
 app.post(`/bot${TELEGRAM_TOKEN}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
+
 
 // -------------------- ADMINS --------------------
 const ADMINS = await Promise.all([
