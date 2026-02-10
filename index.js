@@ -15,7 +15,7 @@ const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const CHAT_ID = process.env.CHAT_ID;
 const PORT = process.env.PORT || 4000;
 const SERVER_URL =
-  process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+  process.env.FRONT_URL || `http://localhost:${PORT}`;
 const SHEET_ID = process.env.SHEET_ID;
 
 // -------------------- GOOGLE SHEETS AUTH --------------------
@@ -32,7 +32,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: ["https://client-95yu.onrender.com", "http://localhost:5173"],
+    origin: ["https://client-production-1ce9.up.railway.app", "http://localhost:5173"],
     credentials: true,
   })
 );
