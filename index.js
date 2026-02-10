@@ -32,7 +32,7 @@ const app = express();
 
 app.use(
   cors({
-    origin: ["https://client-production-1ce9.up.railway.app", "http://localhost:5173"],
+    origin: ["https://www.alphadev.uz", "http://localhost:5173"],
     credentials: true,
   })
 );
